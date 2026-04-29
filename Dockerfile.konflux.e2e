@@ -1,4 +1,4 @@
-# Dockerfile.konflux.e2e builds a container image for running E2E tests.
+# Dockerfile.e2e builds a container image for running E2E tests.
 # Used by the RHOAI shift-left Jenkins pipeline via `podman run`.
 #
 # Usage:
@@ -10,11 +10,9 @@
 #     quay.io/opendatahub/ai-gateway-payload-processing-e2e:latest
 
 ARG GOLANG_VERSION=1.25
-ARG KUBECTL_VERSION=v1.31.0
 
-## Stage 1: Build the test binary and download kubectl
+## Stage 1: Build the test binary
 FROM registry.access.redhat.com/ubi9/go-toolset:$GOLANG_VERSION AS builder
-ARG KUBECTL_VERSION
 
 USER root
 
@@ -30,18 +28,20 @@ COPY test/ test/
 RUN CGO_ENABLED=0 go test -c -o /e2e-tests.test ./test/e2e/ \
     -ldflags="-s -w"
 
-# Download kubectl in the builder stage (has curl and network access).
-RUN curl -sLo /usr/local/bin/kubectl \
-      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" && \
+## Stage 2: Install kubectl from cachi2-prefetched generic deps (hermetic-safe)
+FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:7d4e47500f28ac3a2bff06c25eff9127ff21048538ae03ce240d57cf756acd00 AS kubectl
+ARG TARGETARCH=amd64
+
+RUN cp /cachi2/output/deps/generic/kubectl-${TARGETARCH} /usr/local/bin/kubectl && \
     chmod +x /usr/local/bin/kubectl
 
-## Stage 2: Runtime
-FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+## Stage 3: Runtime
+FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:7d4e47500f28ac3a2bff06c25eff9127ff21048538ae03ce240d57cf756acd00
 
 WORKDIR /e2e
 
 COPY --from=builder /e2e-tests.test /e2e/e2e-tests.test
-COPY --from=builder /usr/local/bin/kubectl /usr/local/bin/kubectl
+COPY --from=kubectl /usr/local/bin/kubectl /usr/local/bin/kubectl
 COPY test/e2e/scripts/entrypoint.sh /e2e/entrypoint.sh
 
 RUN chmod +x /e2e/entrypoint.sh /e2e/e2e-tests.test && \
