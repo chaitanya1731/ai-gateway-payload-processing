@@ -20,8 +20,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -35,6 +37,7 @@ import (
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/interface/plugin"
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-payload-processing/api/inference/v1alpha1"
+	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/controller/legacymigration"
 	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/state"
 )
 
@@ -97,6 +100,16 @@ func NewModelProviderResolver(reconcilerBuilder func() *builder.Builder, k8sClie
 		return nil, fmt.Errorf("failed to register ExternalModel reconciler for plugin '%s' - %w", ModelProviderResolverPluginType, err)
 	}
 
+	// Legacy: watch maas.opendatahub.io ExternalModels and migrate to new CRs
+	legacyObj := &unstructured.Unstructured{}
+	legacyObj.SetGroupVersionKind(legacymigration.LegacyExternalModelGVK)
+	if err := reconcilerBuilder().
+		For(legacyObj).
+		Named("legacy-migration").
+		Complete(&legacymigration.Reconciler{Client: k8sClient}); err != nil {
+		return nil, fmt.Errorf("failed to register legacy migration reconciler for plugin '%s' - %w", ModelProviderResolverPluginType, err)
+	}
+
 	return &ModelProviderResolverPlugin{
 		typedName: plugin.TypedName{Type: ModelProviderResolverPluginType, Name: ModelProviderResolverPluginType},
 		store:     store,
@@ -143,32 +156,68 @@ func (p *ModelProviderResolverPlugin) ProcessRequest(ctx context.Context, cycleS
 	modelKey := types.NamespacedName{Namespace: segments[0], Name: segments[1]}
 	log.FromContext(ctx).V(logutil.VERBOSE).Info("exported namespaced name from path", "key", modelKey)
 
-	externalModelInfo, found := p.store.getModel(modelKey)
+	modelInfo, found := p.store.getModel(modelKey)
 	if !found {
 		return nil // not an external model — pass through for internal models
 	}
 
-	if !strings.HasSuffix(relativePath, "chat/completions") {
-		logger.Error(nil, "unsupported route for external model", "model", modelKey.String(), "path", relativePath)
-		return errcommon.Error{Code: errcommon.BadRequest, Msg: "only /chat/completions input type is supported"}
+	inputFormat := detectInputAPIFormat(relativePath)
+	if inputFormat == "" {
+		logger.Error(nil, "unsupported API path for external model", "model", modelKey.String(), "path", relativePath)
+		return errcommon.Error{Code: errcommon.BadRequest, Msg: fmt.Sprintf("unsupported API path: %s", relativePath)}
 	}
 
-	// model in request body must match the ExternalModel's targetModel
-	if externalModelInfo.targetModel != model {
-		logger.Error(nil, "model mismatch between request body and ExternalModel", "requestModel", model, "externalModel", externalModelInfo.targetModel)
+	ref := selectByWeight(modelInfo.refs)
+
+	if ref.targetModel != model {
+		logger.Error(nil, "model mismatch between request body and ExternalModel", "requestModel", model, "externalModel", ref.targetModel)
 		return errcommon.Error{Code: errcommon.NotFound, Msg: fmt.Sprintf("model in request body '%s' doesn't match ExternalModel", model)}
 	}
 
-	// write resolved info to CycleState for downstream plugins (api-translation, apikey-injection)
-	cycleState.Write(state.ProviderKey, externalModelInfo.provider)
-	cycleState.Write(state.ModelKey, externalModelInfo.targetModel)
-	cycleState.Write(state.APIFormatKey, externalModelInfo.apiFormat)
-	cycleState.Write(state.CredsRefName, externalModelInfo.secretName)
-	cycleState.Write(state.CredsRefNamespace, externalModelInfo.secretNamespace)
-	cycleState.Write(state.ModelConfigKey, externalModelInfo.config)
+	cycleState.Write(state.ProviderKey, ref.provider)
+	cycleState.Write(state.ModelKey, ref.targetModel)
+	cycleState.Write(state.APIFormatKey, ref.apiFormat)
+	cycleState.Write(state.CredsRefName, ref.secretName)
+	cycleState.Write(state.CredsRefNamespace, ref.secretNamespace)
+	cycleState.Write(state.ModelConfigKey, ref.config)
+	cycleState.Write(state.InputAPIFormatKey, inputFormat)
 
-	logger.Info("external model resolved", "model", modelKey.String(), "provider", externalModelInfo.provider)
+	logger.Info("external model resolved", "model", modelKey.String(), "provider", ref.provider, "inputFormat", inputFormat, "apiFormat", ref.apiFormat)
 	return nil
+}
+
+// detectInputAPIFormat determines the client's API format from the request path suffix.
+func detectInputAPIFormat(path string) string {
+	switch {
+	case strings.HasSuffix(path, "/v1/chat/completions"):
+		return "openai-chat"
+	case strings.HasSuffix(path, "/v1/messages"):
+		return "messages"
+	case strings.HasSuffix(path, "/v1/responses"):
+		return "openai-responses"
+	default:
+		return ""
+	}
+}
+
+// selectByWeight picks a provider ref using weighted random selection.
+// With a single ref, returns it directly (no randomness).
+func selectByWeight(refs []resolvedProviderRef) *resolvedProviderRef {
+	if len(refs) == 1 {
+		return &refs[0]
+	}
+	totalWeight := 0
+	for i := range refs {
+		totalWeight += refs[i].weight
+	}
+	r := rand.IntN(totalWeight)
+	for i := range refs {
+		r -= refs[i].weight
+		if r < 0 {
+			return &refs[i]
+		}
+	}
+	return &refs[len(refs)-1]
 }
 
 func sanitizePath(relativeUrlPath string) string {
