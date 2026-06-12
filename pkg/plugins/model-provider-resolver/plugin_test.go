@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/framework"
 
+	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/apiformat"
 	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/provider"
 	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/state"
 )
@@ -38,10 +39,10 @@ func TestProcessRequest_ModelResolved(t *testing.T) {
 	)
 	store.addOrUpdateModel(
 		types.NamespacedName{Namespace: extNS, Name: extName},
-		&externalModelInfo{refs: []resolvedProviderRef{{
+		&externalModelInfo{modelName: extName, refs: []resolvedProviderRef{{
 			provider:        provider.Anthropic,
 			targetModel:     targetModel,
-			apiFormat:       "messages",
+			apiFormat:       apiformat.Messages,
 			secretName:      credName,
 			secretNamespace: extNS,
 			config:          map[string]string{},
@@ -53,7 +54,7 @@ func TestProcessRequest_ModelResolved(t *testing.T) {
 	cs := framework.NewCycleState()
 	req := framework.NewInferenceRequest()
 	req.Headers[":path"] = "/" + extNS + "/" + extName + "/v1/chat/completions"
-	req.Body["model"] = targetModel
+	req.Body["model"] = extName
 
 	err := plugin.ProcessRequest(context.Background(), cs, req)
 	require.NoError(t, err)
@@ -74,9 +75,9 @@ func TestProcessRequest_ModelResolved(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, extNS, actualCredsNamespace)
 
-	actualAPIFormat, err := framework.ReadCycleStateKey[string](cs, state.APIFormatKey)
+	actualAPIFormat, err := framework.ReadCycleStateKey[apiformat.APIFormat](cs, state.APIFormatKey)
 	require.NoError(t, err)
-	require.Equal(t, "messages", actualAPIFormat)
+	require.Equal(t, apiformat.Messages, actualAPIFormat)
 }
 
 func TestProcessRequest_ModelNotFound(t *testing.T) {
@@ -112,7 +113,7 @@ func TestProcessRequest_BadPath(t *testing.T) {
 	store := newInfoStore()
 	store.addOrUpdateModel(
 		types.NamespacedName{Namespace: "llm", Name: "ext"},
-		&externalModelInfo{refs: []resolvedProviderRef{{
+		&externalModelInfo{modelName: "ext", refs: []resolvedProviderRef{{
 			provider: provider.OpenAI, targetModel: "gpt-4o",
 			secretName: "k", secretNamespace: "llm",
 			config: map[string]string{}, weight: 1,
@@ -177,7 +178,7 @@ func TestProcessRequest_AnthropicMessages(t *testing.T) {
 	store := newInfoStore()
 	store.addOrUpdateModel(
 		types.NamespacedName{Namespace: "llm", Name: "claude"},
-		&externalModelInfo{refs: []resolvedProviderRef{{
+		&externalModelInfo{modelName: "claude", refs: []resolvedProviderRef{{
 			provider: provider.Anthropic, targetModel: "claude-opus-4-6",
 			apiFormat: "messages", secretName: "key", secretNamespace: "llm",
 			config: map[string]string{}, weight: 1,
@@ -188,25 +189,25 @@ func TestProcessRequest_AnthropicMessages(t *testing.T) {
 	cs := framework.NewCycleState()
 	req := framework.NewInferenceRequest()
 	req.Headers[":path"] = "/llm/claude/v1/messages"
-	req.Body["model"] = "claude-opus-4-6"
+	req.Body["model"] = "claude"
 
 	err := p.ProcessRequest(context.Background(), cs, req)
 	require.NoError(t, err)
 
-	inputFmt, err := framework.ReadCycleStateKey[string](cs, state.InputAPIFormatKey)
+	inputFmt, err := framework.ReadCycleStateKey[apiformat.APIFormat](cs, state.InputAPIFormatKey)
 	require.NoError(t, err)
-	require.Equal(t, "messages", inputFmt)
+	require.Equal(t, apiformat.Messages, inputFmt)
 
-	apiFormat, err := framework.ReadCycleStateKey[string](cs, state.APIFormatKey)
+	apiFormat, err := framework.ReadCycleStateKey[apiformat.APIFormat](cs, state.APIFormatKey)
 	require.NoError(t, err)
-	require.Equal(t, "messages", apiFormat)
+	require.Equal(t, apiformat.Messages, apiFormat)
 }
 
 func TestProcessRequest_OpenAIResponses(t *testing.T) {
 	store := newInfoStore()
 	store.addOrUpdateModel(
 		types.NamespacedName{Namespace: "llm", Name: "gpt"},
-		&externalModelInfo{refs: []resolvedProviderRef{{
+		&externalModelInfo{modelName: "gpt", refs: []resolvedProviderRef{{
 			provider: provider.OpenAI, targetModel: "gpt-5.5",
 			apiFormat: "openai-chat", secretName: "key", secretNamespace: "llm",
 			config: map[string]string{}, weight: 1,
@@ -217,21 +218,21 @@ func TestProcessRequest_OpenAIResponses(t *testing.T) {
 	cs := framework.NewCycleState()
 	req := framework.NewInferenceRequest()
 	req.Headers[":path"] = "/llm/gpt/v1/responses"
-	req.Body["model"] = "gpt-5.5"
+	req.Body["model"] = "gpt"
 
 	err := p.ProcessRequest(context.Background(), cs, req)
 	require.NoError(t, err)
 
-	inputFmt, err := framework.ReadCycleStateKey[string](cs, state.InputAPIFormatKey)
+	inputFmt, err := framework.ReadCycleStateKey[apiformat.APIFormat](cs, state.InputAPIFormatKey)
 	require.NoError(t, err)
-	require.Equal(t, "openai-responses", inputFmt)
+	require.Equal(t, apiformat.OpenAIResponses, inputFmt)
 }
 
 func TestProcessRequest_UnsupportedPath(t *testing.T) {
 	store := newInfoStore()
 	store.addOrUpdateModel(
 		types.NamespacedName{Namespace: "llm", Name: "model"},
-		&externalModelInfo{refs: []resolvedProviderRef{{
+		&externalModelInfo{modelName: "model", refs: []resolvedProviderRef{{
 			provider: provider.OpenAI, targetModel: "gpt-4o",
 			apiFormat: "openai-chat", secretName: "key", secretNamespace: "llm",
 			config: map[string]string{}, weight: 1,
@@ -242,7 +243,7 @@ func TestProcessRequest_UnsupportedPath(t *testing.T) {
 	cs := framework.NewCycleState()
 	req := framework.NewInferenceRequest()
 	req.Headers[":path"] = "/llm/model/v1/unknown"
-	req.Body["model"] = "gpt-4o"
+	req.Body["model"] = "model"
 
 	err := p.ProcessRequest(context.Background(), cs, req)
 	require.Error(t, err)
@@ -252,11 +253,11 @@ func TestProcessRequest_UnsupportedPath(t *testing.T) {
 func TestDetectInputAPIFormat(t *testing.T) {
 	tests := []struct {
 		path     string
-		expected string
+		expected apiformat.APIFormat
 	}{
-		{"llm/model/v1/chat/completions", "openai-chat"},
-		{"llm/model/v1/messages", "messages"},
-		{"llm/model/v1/responses", "openai-responses"},
+		{"llm/model/v1/chat/completions", apiformat.OpenAIChatCompletions},
+		{"llm/model/v1/messages", apiformat.Messages},
+		{"llm/model/v1/responses", apiformat.OpenAIResponses},
 		{"llm/model/v1/unknown", ""},
 		{"llm/model/v1/models", ""},
 	}

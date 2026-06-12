@@ -29,6 +29,7 @@ import (
 	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/logging"
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-payload-processing/api/inference/v1alpha1"
+	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/apiformat"
 )
 
 const providerRequeueDelay = 5 * time.Second
@@ -72,8 +73,13 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: providerRequeueDelay}, nil
 	}
 
-	r.store.addOrUpdateModel(req.NamespacedName, &externalModelInfo{refs: resolved})
-	logger.Info("updated model store", "resolvedRefs", len(resolved))
+	modelName := model.Spec.ModelName
+	if modelName == "" {
+		modelName = req.Name
+	}
+
+	r.store.addOrUpdateModel(req.NamespacedName, &externalModelInfo{modelName: modelName, refs: resolved})
+	logger.Info("updated model store", "modelName", modelName, "resolvedRefs", len(resolved))
 	return ctrl.Result{}, nil
 }
 
@@ -103,7 +109,7 @@ func (r *externalModelReconciler) resolveRef(namespace string, ref inferencev1al
 	return &resolvedProviderRef{
 		provider:        providerInfo.provider,
 		targetModel:     ref.TargetModel,
-		apiFormat:       ref.APIFormat,
+		apiFormat:       apiformat.APIFormat(ref.APIFormat),
 		secretName:      secretName,
 		secretNamespace: secretNamespace,
 		config:          config,
@@ -122,4 +128,3 @@ func mergeConfig(providerConfig, modelConfig map[string]string) map[string]strin
 	}
 	return merged
 }
-

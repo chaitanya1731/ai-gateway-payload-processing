@@ -38,6 +38,7 @@ import (
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-payload-processing/api/inference/v1alpha1"
 	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/controller/legacymigration"
+	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/apiformat"
 	"github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/common/state"
 )
 
@@ -167,12 +168,13 @@ func (p *ModelProviderResolverPlugin) ProcessRequest(ctx context.Context, cycleS
 		return errcommon.Error{Code: errcommon.BadRequest, Msg: fmt.Sprintf("unsupported API path: %s", relativePath)}
 	}
 
-	ref := selectByWeight(modelInfo.refs)
-
-	if ref.targetModel != model {
-		logger.Error(nil, "model mismatch between request body and ExternalModel", "requestModel", model, "externalModel", ref.targetModel)
+	// model in request body must match the ExternalModel's client-facing name
+	if modelInfo.modelName != model {
+		logger.Error(nil, "model mismatch between request body and ExternalModel", "requestModel", model, "externalModel", modelInfo.modelName)
 		return errcommon.Error{Code: errcommon.NotFound, Msg: fmt.Sprintf("model in request body '%s' doesn't match ExternalModel", model)}
 	}
+
+	ref := selectByWeight(modelInfo.refs)
 
 	cycleState.Write(state.ProviderKey, ref.provider)
 	cycleState.Write(state.ModelKey, ref.targetModel)
@@ -187,14 +189,14 @@ func (p *ModelProviderResolverPlugin) ProcessRequest(ctx context.Context, cycleS
 }
 
 // detectInputAPIFormat determines the client's API format from the request path suffix.
-func detectInputAPIFormat(path string) string {
+func detectInputAPIFormat(path string) apiformat.APIFormat {
 	switch {
 	case strings.HasSuffix(path, "/v1/chat/completions"):
-		return "openai-chat"
+		return apiformat.OpenAIChatCompletions
 	case strings.HasSuffix(path, "/v1/messages"):
-		return "messages"
+		return apiformat.Messages
 	case strings.HasSuffix(path, "/v1/responses"):
-		return "openai-responses"
+		return apiformat.OpenAIResponses
 	default:
 		return ""
 	}
