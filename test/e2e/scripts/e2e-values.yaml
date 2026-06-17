@@ -8,19 +8,16 @@ upstreamIpp:
           fieldName: model
           headerName: X-Gateway-Model-Name
       - type: model-provider-resolver
-        name: model-provider-resolver
         parameters:
           gatewayName: "e2e-gateway"
           gatewayNamespace: "default"
       - type: api-translation
-        name: api-translation
         parameters:
           vertexOpenAI:
             project: "test-project"
             location: "us-central1"
             endpoint: "openapi"
       - type: apikey-injection
-        name: apikey-injection
       profiles:
       - name: default
         plugins:
